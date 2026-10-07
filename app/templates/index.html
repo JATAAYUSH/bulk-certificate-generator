@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bulk Certificate Generator</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: Inter, "Segoe UI", Arial, sans-serif;
+      color: #1f2937;
+      background: #f3f5f8;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 36px 18px; }
+    main { width: min(760px, 100%); margin: 0 auto; }
+    header { margin-bottom: 24px; }
+    h1 { margin: 0 0 8px; color: #1f3a5f; font-size: 2rem; }
+    header p { margin: 0; color: #586579; line-height: 1.5; }
+    form, #results { padding: 24px; border: 1px solid #dce2ea; border-radius: 12px; background: #fff; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    label { display: block; margin-bottom: 16px; font-size: .92rem; font-weight: 600; }
+    input, textarea {
+      display: block; width: 100%; margin-top: 7px; padding: 11px 12px;
+      border: 1px solid #bdc7d5; border-radius: 7px; font: inherit;
+    }
+    textarea { min-height: 190px; resize: vertical; line-height: 1.5; }
+    small { display: block; margin-top: 6px; color: #64748b; font-weight: 400; line-height: 1.45; }
+    button, .download {
+      display: inline-block; padding: 11px 16px; border: 0; border-radius: 7px;
+      background: #1f3a5f; color: white; font: inherit; font-weight: 600; text-decoration: none;
+      cursor: pointer;
+    }
+    button:disabled { opacity: .65; cursor: wait; }
+    #status { min-height: 24px; margin: 16px 0 0; color: #334155; }
+    #status.error { color: #b42318; }
+    #results { display: none; margin-top: 20px; }
+    #results h2 { margin-top: 0; color: #1f3a5f; font-size: 1.25rem; }
+    #summary { margin: 0 0 16px; line-height: 1.6; }
+    #certificates { padding-left: 22px; }
+    #certificates li { margin: 8px 0; overflow-wrap: anywhere; }
+    #certificates a { color: #1f3a5f; }
+    @media (max-width: 560px) {
+      body { padding: 24px 12px; }
+      .grid { grid-template-columns: 1fr; gap: 0; }
+      form, #results { padding: 18px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Bulk Certificate Generator</h1>
+      <p>Create personalized participation certificates for a batch of recipients. Paste names one per line; for emails, add a tab between the name and email.</p>
+    </header>
+
+    <form id="job-form">
+      <div class="grid">
+        <label>
+          Event name
+          <input name="event_name" maxlength="150" required>
+        </label>
+        <label>
+          Issued by
+          <input name="issued_by" maxlength="150">
+        </label>
+      </div>
+      <label>
+        Issue date
+        <input name="issue_date" type="date">
+      </label>
+      <label>
+        Recipients
+        <textarea name="recipients" required placeholder="Asha Patel&#10;Ravi Shah&#9;ravi@example.com"></textarea>
+        <small>Up to 1,000 recipients. Email addresses are optional and are not used to send email.</small>
+      </label>
+      <button id="submit-button" type="submit">Generate certificates</button>
+      <p id="status" role="status" aria-live="polite"></p>
+    </form>
+
+    <section id="results" aria-live="polite">
+      <h2>Generation results</h2>
+      <p id="summary"></p>
+      <a id="download-all" class="download" hidden>Download successful certificates (ZIP)</a>
+      <ol id="certificates"></ol>
+    </section>
+  </main>
+
+  <script>
+    const form = document.querySelector("#job-form");
+    const submitButton = document.querySelector("#submit-button");
+    const statusMessage = document.querySelector("#status");
+    const results = document.querySelector("#results");
+    const summary = document.querySelector("#summary");
+    const downloadAll = document.querySelector("#download-all");
+    const certificateList = document.querySelector("#certificates");
+    const terminalStatuses = new Set(["completed", "completed_with_errors", "failed"]);
+    const today = new Date();
+    form.elements.issue_date.value = [
+      today.getFullYear(),
+      String(today.getMonth() + 1).padStart(2, "0"),
+      String(today.getDate()).padStart(2, "0")
+    ].join("-");
+
+    function setStatus(message, isError = false) {
+      statusMessage.textContent = message;
+      statusMessage.classList.toggle("error", isError);
+    }
+
+    async function getJson(url) {
+      const response = await fetch(url);
+      const body = await response.json();
+      if (!response.ok) {
+        const detail = body.details ? body.details.join("; ") : body.error || response.statusText;
+        throw new Error(detail);
+      }
+      return body;
+    }
+
+    function parseRecipients(text) {
+      return text.split(/\r?\n/).map((line) => {
+        const trimmed = line.trim();
+        if (!trimmed) return null;
+        const separator = line.indexOf("\t");
+        if (separator < 0) return { name: trimmed };
+        const email = line.slice(separator + 1).trim();
+        return { name: line.slice(0, separator).trim(), ...(email ? { email } : {}) };
+      }).filter(Boolean);
+    }
+
+    async function loadCertificates(jobId) {
+      const certificates = [];
+      for (let offset = 0; offset < 1000; offset += 500) {
+        const page = await getJson(`/api/jobs/${encodeURIComponent(jobId)}/certificates?limit=500&offset=${offset}`);
+        certificates.push(...page.certificates);
+        if (page.certificates.length < 500) break;
+      }
+      return certificates;
+    }
+
+    function showResults(job, certificates) {
+      summary.textContent =
+        `${job.progress.succeeded} succeeded · ${job.progress.failed} failed · ${job.progress.total} total`;
+      downloadAll.href = `/api/jobs/${encodeURIComponent(job.id)}/download`;
+      downloadAll.hidden = job.progress.succeeded === 0;
+      certificateList.replaceChildren();
+      certificates.forEach((certificate) => {
+        const item = document.createElement("li");
+        const name = certificate.recipient_name || `Recipient ${certificate.position + 1}`;
+        item.append(document.createTextNode(`${name}: ${certificate.status}`));
+        if (certificate.download_url) {
+          const link = document.createElement("a");
+          link.href = certificate.download_url;
+          link.textContent = " Download PDF";
+          item.append(link);
+        } else if (certificate.error) {
+          item.append(document.createTextNode(` — ${certificate.error}`));
+        }
+        certificateList.append(item);
+      });
+      results.style.display = "block";
+    }
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      results.style.display = "none";
+      submitButton.disabled = true;
+      setStatus("Submitting batch…");
+      try {
+        const recipients = parseRecipients(form.elements.recipients.value);
+        if (recipients.length === 0) throw new Error("Enter at least one recipient.");
+        if (recipients.length > 1000) throw new Error("A batch can contain at most 1,000 recipients.");
+
+        const response = await fetch("/api/jobs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            event_name: form.elements.event_name.value,
+            issued_by: form.elements.issued_by.value,
+            issue_date: form.elements.issue_date.value,
+            recipients
+          })
+        });
+        const job = await response.json();
+        if (!response.ok) {
+          const detail = job.details ? job.details.join("; ") : job.error || response.statusText;
+          throw new Error(detail);
+        }
+
+        let current = job;
+        while (!terminalStatuses.has(current.status)) {
+          setStatus(`Generating certificates… ${current.progress.percent}% complete`);
+          await new Promise((resolve) => setTimeout(resolve, 800));
+          current = await getJson(`/api/jobs/${encodeURIComponent(job.id)}`);
+        }
+        const certificates = await loadCertificates(job.id);
+        showResults(current, certificates);
+        setStatus(`Generation finished: ${current.status.replaceAll("_", " ")}.`);
+      } catch (error) {
+        setStatus(error.message || "Could not generate certificates.", true);
+      } finally {
+        submitButton.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

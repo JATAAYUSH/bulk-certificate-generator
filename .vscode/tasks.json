@@ -1,0 +1,15 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Run certificate generator server",
+			"type": "shell",
+			"command": "python",
+			"args": [
+				"run.py"
+			],
+			"isBackground": true,
+			"problemMatcher": []
+		}
+	]
+}

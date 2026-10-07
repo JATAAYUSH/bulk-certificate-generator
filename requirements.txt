@@ -1,0 +1,3 @@
+Flask>=3.0
+reportlab>=4.0
+# Tests use only the standard library (unittest); pytest also works if installed.
